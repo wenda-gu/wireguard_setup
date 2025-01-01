@@ -1,0 +1,110 @@
+#cloud-config
+# Define root user
+users:
+  - name: root
+    groups: sudo
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    shell: /bin/bash
+
+# Prepare system
+package_update: true
+package_upgrade: true
+packages:
+  - wireguard-tools
+
+# Write WireGuard Firewall Rules and stylize bash prompt
+write_files:
+  - path: /etc/wireguard/wg0.conf
+    permissions: "0600"
+    content: |
+      [Interface]
+      Address = 192.168.6.1/24
+      ListenPort = 41194
+      SaveConfig = false
+      PostUp = /etc/wireguard/helper/add-nat-routing.sh
+      PostDown = /etc/wireguard/helper/remove-nat-routing.sh
+      PrivateKey = 
+
+  - path: /etc/wireguard/helper/add-nat-routing.sh
+    permissions: "0755"
+    content: |
+      #!/bin/bash
+      IPT="/sbin/iptables"
+      IPT6="/sbin/ip6tables"          
+
+      IN_FACE="eth0"                   # NIC connected to the internet
+      WG_FACE="wg0"                    # WG NIC 
+      SUB_NET="192.168.6.0/24"         # WG IPv4 sub/net aka CIDR
+      WG_PORT="41194"                  # WG udp port
+      # SUB_NET_6="fd42:42:42:42::/112"  # WG IPv6 sub/net
+
+      ## IPv4 ##
+      $IPT -t nat -I POSTROUTING 1 -s $SUB_NET -o $IN_FACE -j MASQUERADE
+      $IPT -I INPUT 1 -i $WG_FACE -j ACCEPT
+      $IPT -I FORWARD 1 -i $IN_FACE -o $WG_FACE -j ACCEPT
+      $IPT -I FORWARD 1 -i $WG_FACE -o $IN_FACE -j ACCEPT
+      $IPT -I INPUT 1 -i $IN_FACE -p udp --dport $WG_PORT -j ACCEPT
+
+      ## IPv6 (Uncomment) ##
+      ## $IPT6 -t nat -I POSTROUTING 1 -s $SUB_NET_6 -o $IN_FACE -j MASQUERADE
+      ## $IPT6 -I INPUT 1 -i $WG_FACE -j ACCEPT
+      ## $IPT6 -I FORWARD 1 -i $IN_FACE -o $WG_FACE -j ACCEPT
+      ## $IPT6 -I FORWARD 1 -i $WG_FACE -o $IN_FACE -j ACCEPT
+
+  - path: /etc/wireguard/helper/remove-nat-routing.sh
+    permissions: "0755"
+    content: |
+      #!/bin/bash
+      IPT="/sbin/iptables"
+      IPT6="/sbin/ip6tables"          
+
+      IN_FACE="eth0"                   # NIC connected to the internet
+      WG_FACE="wg0"                    # WG NIC 
+      SUB_NET="192.168.6.0/24"         # WG IPv4 sub/net aka CIDR
+      WG_PORT="41194"                  # WG udp port
+      # SUB_NET_6="fd42:42:42:42::/112"  # WG IPv6 sub/net
+
+      ## IPv4 ##
+      $IPT -t nat -I POSTROUTING 1 -s $SUB_NET -o $IN_FACE -j MASQUERADE
+      $IPT -I INPUT 1 -i $WG_FACE -j ACCEPT
+      $IPT -I FORWARD 1 -i $IN_FACE -o $WG_FACE -j ACCEPT
+      $IPT -I FORWARD 1 -i $WG_FACE -o $IN_FACE -j ACCEPT
+      $IPT -I INPUT 1 -i $IN_FACE -p udp --dport $WG_PORT -j ACCEPT
+
+      ## IPv6 (Uncomment) ##
+      ## $IPT6 -t nat -I POSTROUTING 1 -s $SUB_NET_6 -o $IN_FACE -j MASQUERADE
+      ## $IPT6 -I INPUT 1 -i $WG_FACE -j ACCEPT
+      ## $IPT6 -I FORWARD 1 -i $IN_FACE -o $WG_FACE -j ACCEPT
+      ## $IPT6 -I FORWARD 1 -i $WG_FACE -o $IN_FACE -j ACCEPT
+
+  - path: /etc/sysctl.d/10-wireguard.conf
+    permissions: "0600"
+    content: |
+      net.ipv4.ip_forward=1
+      net.ipv6.conf.all.forwarding=1
+
+  - path: /root/.bashrc
+    append: true
+    content: |
+      PS1="\[\033[1m\]\`if [ \$? = 0 ]; then echo \[\e[32m\]; else echo \[\e[31m\]; fi\`██ \[\e[35m\]\u@\h\[\e[30m\]:\[\e[33m\]\W\[\e[37m\]\[\033[m\] $ "
+      export PS1
+
+runcmd:
+  - cd /etc/wireguard
+  - umask 077
+  - wg genkey | tee server_private.key | wg pubkey > server_public.key
+  - cat /etc/wireguard/server_private.key >> /etc/wireguard/wg0.conf
+
+  # Reload changes using the sysctl command
+  - sysctl -p /etc/sysctl.d/10-wireguard.conf
+
+  # UFW Firewall Setup
+  - ufw allow $server_port/udp
+  - ufw allow 22/tcp
+  - ufw enable -y
+
+  # Start WireGuard
+  - systemctl start wg-quick@wg0
+
+  # Enable WireGuard on boot
+  - systemctl enable wg-quick@wg0
